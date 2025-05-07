@@ -9,9 +9,18 @@ import SwiftUI
 
 @main
 struct LowEnergyDevice_BLE_App: App {
+    @ObservedObject var router = Router()
+    
     var body: some Scene {
         WindowGroup {
-            BLEDeviceListView()
+            NavigationStack(path: $router.navPath) {
+                BLEDeviceListView()
+                    .navigationDestination(for: AuthFlow.self) { destination in
+                        router.destination(for: destination)
+                            .navigationBarBackButtonHidden()
+                    }
+            }
+            .environmentObject(router)
         }
     }
 }

@@ -50,6 +50,8 @@ class BLEManager: NSObject, ObservableObject {
 
     /// Disconnect from the currently connected device.
     func disconnectDevice() {
+        isConnected = false
+        peripheral = nil
         guard let peripheral else { return }
         centralManager.cancelPeripheralConnection(peripheral)
     }

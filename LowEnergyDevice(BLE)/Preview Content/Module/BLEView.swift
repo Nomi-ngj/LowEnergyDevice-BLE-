@@ -8,9 +8,8 @@
 import SwiftUI
 
 struct BLEView: View {
-    let bleManager: BLEManager!
-
-    @Environment(\.dismiss) var dismiss // ✅ Handle view dismissal
+    var bleManager: BLEManager!
+    @EnvironmentObject var router: Router
     
     var body: some View {
         VStack(spacing: 20) {
@@ -52,8 +51,9 @@ struct BLEView: View {
             }
             // ✅ Disconnect Button
             Button("Disconnect") {
+                bleManager.isConnected = false
                 bleManager.disconnectDevice()
-                dismiss()
+                router.navigateBack()
             }
             .buttonStyle(.bordered)
             .foregroundColor(.red)

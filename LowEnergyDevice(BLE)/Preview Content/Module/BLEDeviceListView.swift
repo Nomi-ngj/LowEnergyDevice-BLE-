@@ -9,10 +9,8 @@ import SwiftUI
 
 struct BLEDeviceListView: View {
     @ObservedObject private var bleManager = BLEManager()
-    @State private var isConnected = false // ✅ Track connection status
-    
+    @EnvironmentObject var router: Router
     var body: some View {
-        NavigationStack {
             VStack {
                 Text("Bluetooth Devices")
                     .font(.title)
@@ -66,18 +64,11 @@ struct BLEDeviceListView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .padding()
-                
-//                // ✅ Navigate to BLEView when connected
-//                NavigationLink(destination: BLEView(bleManager: bleManager), isActive: $isConnected) {
-//                    EmptyView()
-//                }
             }
             .onChange(of: bleManager.isConnected) { newValue in
                 if newValue {
-                    isConnected = true // ✅ Navigate when BLE is connected
+                    router.navigate(to: .bleDetails(bleManager: self.bleManager))
                 }
             }
-        }
     }
 }
-
