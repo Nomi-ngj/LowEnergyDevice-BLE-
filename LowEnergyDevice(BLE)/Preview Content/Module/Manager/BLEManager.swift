@@ -21,11 +21,23 @@ class BLEManager: NSObject, ObservableObject {
     @Published var receivedData: String = ""                // Latest received response
     @Published var discoveredDevices: [CBPeripheral] = []   // Discovered peripherals
     @Published var peripheral: CBPeripheral?                // Currently connected peripheral
+    
+    // Service UUID
+    static let serviceUUID = CBUUID(string: "000056ff-0000-1000-8000-00805f9b34fb")
+    
+    // Characteristic UUIDs
+    static let rxCharacteristicUUID = CBUUID(string: "000033F4-0000-1000-8000-00805f9b34fb") // Case to Phone
+    static let txCharacteristicUUID = CBUUID(string: "000033f3-0000-1000-8000-00805f9b34fb") // Phone to Case
 
     // MARK: - Private BLE Properties
     private var centralManager: CBCentralManager!           // CoreBluetooth manager
     private var writeCharacteristic: CBCharacteristic?      // For sending commands
     private var notifyCharacteristic: CBCharacteristic?     // For receiving notifications
+    private var discoveredPeripherals: [CBPeripheral] = []
+    
+    var onPeripheralDiscovered: ((CBPeripheral) -> Void)?
+    var onConnectionStateChanged: ((Bool) -> Void)?
+    var onDataReceived: ((Data) -> Void)?
 
     // MARK: - Initialization
     override init() {
@@ -57,28 +69,24 @@ class BLEManager: NSObject, ObservableObject {
     }
 
     /// Send a command to the connected BLE device using HEX format.
-    func sendCommand(_ command: BLECommand) {
-        guard let peripheral = peripheral, let writeCharacteristic = writeCharacteristic else {
-            print("❌ No connected device.")
+    func sendCommand(_ command: BLECommand, value: Int? = nil) {
+        guard let writeCharacters = self.writeCharacteristic else {
+            print("writeCharacters failed")
+            return
+        }
+        guard let peripheral = peripheral else {
+            print("Failed to send in peripheral")
             return
         }
         
         if let data = command.packet(){
-            peripheral.writeValue(data, for: writeCharacteristic, type: .withResponse)
-            print("📤 Sent HEX Command: \(data) (\(command.rawValue))")
+            debugPrint(data.base64EncodedString())
+            peripheral.writeValue(data, for: writeCharacters, type: .withResponse)
+            print("📤 Sent HEX Command: \(data) \(command.description)")
         }
     }
 }
 
-// MARK: - Private BLE Utility Extensions
-private extension BLEManager {
-
-    /// Subscribe to notifications on a characteristic.
-    func subscribeToNotifications(for characteristic: CBCharacteristic) {
-        peripheral?.setNotifyValue(true, for: characteristic)
-        print("📡 Subscribed to notifications for \(characteristic.uuid.uuidString)")
-    }
-}
 
 
 // MARK: - CBCentralManagerDelegate and CBPeripheralDelegate Conformance
@@ -89,7 +97,18 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
         self.peripheral = peripheral
         self.peripheral?.delegate = self
         centralManager.stopScan()
-        centralManager.connect(peripheral, options: nil)
+        let options: [String: Any] = [
+            CBConnectPeripheralOptionNotifyOnConnectionKey: true,         // Notify when connected
+            CBConnectPeripheralOptionNotifyOnDisconnectionKey: true,      // Notify when disconnected
+            CBConnectPeripheralOptionNotifyOnNotificationKey: true,       // Notify on incoming data
+            CBConnectPeripheralOptionEnableTransportBridgingKey: true,    // Enable transport bridging
+            CBConnectPeripheralOptionRequiresANCS: true,                  // Requires ANCS support
+//            CBConnectPeripheralOptionEnableAutoReconnect: true            // Auto reconnect when available
+        ]
+
+        // Connecting to the peripheral with specified options
+        centralManager.connect(peripheral, options: options)
+
         self.sendCommand(.sendPassword)
         debugPrint("Connect to Selected Device \(peripheral)")
     }
@@ -126,6 +145,7 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
     func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
         print("🎉 Connected to \(peripheral.name ?? "Unknown Device")")
         isConnected = true
+        self.peripheral = peripheral
         peripheral.delegate = self
         peripheral.discoverServices(nil) // Start discovering services
     }
@@ -138,29 +158,17 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
     /// Called when the BLE device is disconnected.
     func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         print("🔌 Disconnected from \(peripheral.name ?? "Unknown Device")")
-        isConnected = false
-        self.peripheral = nil
+        disconnectDevice()
     }
-
-    /// Called when services are discovered on the connected peripheral.
-//    func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-//        guard let services = peripheral.services else { return }
-//        for service in services {
-//            print("🔍 Found Service: \(service.uuid.uuidString)")
-//            peripheral.discoverCharacteristics(nil, for: service)
-//        }
-//    }
     
     func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
         guard let services = peripheral.services else { return }
 
-        let rxUUID = CBUUID(string: "000033F3-0000-1000-8000-00805F9B34FB")
-        let txUUID = CBUUID(string: "000033F4-0000-1000-8000-00805F9B34FB")
-        let characteristicUUIDs = [rxUUID, txUUID]
-
+        let characteristicUUIDs = [Self.rxCharacteristicUUID, Self.txCharacteristicUUID]
+        print("🔍 Found services: \(services)")
+        
         for service in services {
-            print("🔍 Found Service: \(service.uuid)")
-            if service.uuid == CBUUID(string: "000056FF") {
+            if service.uuid == Self.serviceUUID {
                 print("✅ Discover Characteristics: \(service.uuid.uuidString)")
                 peripheral.discoverCharacteristics(characteristicUUIDs, for: service)
             }
@@ -172,20 +180,44 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
     func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
         guard let characteristics = service.characteristics else { return }
         
+        for characteristic in service.characteristics ?? [] {
+            print("Characteristic UUID: \(characteristic.uuid.uuidString)")
+           
+            print("Properties: \(characteristic.properties)")
+            
+            print("is Notifying: \(characteristic.isNotifying)")
+        }
+        
+        
         for characteristic in characteristics {
+            
+            print("✅ Found Characteristic: \(characteristic.uuid.uuidString)")
+            
+            
+            if characteristic.properties.contains(.write) {
+                // Safe to write with response
+                print("✅✅✅✅✅✅✅Safe to write with response: \(characteristic.uuid.uuidString)")
+            } else if characteristic.properties.contains(.writeWithoutResponse) {
+                // Write without response
+                print("✅ Write without response: \(characteristic.uuid.uuidString)")
+            } else {
+                print("❌ Writing not allowed for \(characteristic.uuid)")
+            }
+
             
             
             // Store write characteristic
-            if characteristic.properties.contains(.write) || characteristic.properties.contains(.writeWithoutResponse) && characteristic.uuid.uuidString == "33F3"{
-                print("✅ Found Characteristic: \(characteristic.uuid.uuidString)")
+            if characteristic.uuid == CBUUID(string: "33F3") {
                 writeCharacteristic = characteristic
                 print("✍️ Write Characteristic Found: \(characteristic.uuid.uuidString)")
             }
 
             // Subscribe to notifications if supported and matches expected UUID
-            if characteristic.properties.contains(.notify) && characteristic.uuid.uuidString == "33F3" {
+            if characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate) {
                 notifyCharacteristic = characteristic
-                subscribeToNotifications(for: characteristic)
+                peripheral.setNotifyValue(true, for: characteristic)
+                
+                print("📡 Subscribed to notifications for \(characteristic.uuid.uuidString)")
                 print("📡 Subscribed to notifications for \(characteristic)")
             }
         }
@@ -199,21 +231,30 @@ extension BLEManager: CBCentralManagerDelegate, CBPeripheralDelegate {
             print("✅ Successfully subscribed to \(characteristic.uuid)")
         }
     }
+    
+    func peripheral(_ peripheral: CBPeripheral, didWriteValueFor characteristic: CBCharacteristic, error: Error?) {
+        print("✅ Wrote to \(characteristic.uuid), error: \(String(describing: error))")
+        
+        guard let value = characteristic.value else { return }
+        let bytes = [UInt8](value)
 
-    /// Called when notification data is received from the peripheral.
-    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
-        guard let data = characteristic.value else { return }
-        let hexString = BLECommand.sendPassword.dataToHexString(data)
-        print("📥 (HEX: \(hexString))")
+        // If response is 2 bytes, e.g., [0x12, 0x34]
+        let response16 = UInt16(bytes[0]) | UInt16(bytes[1]) << 8  // 0x3412
+        print("16-bit response: \(String(format: "%04X", response16))")
 
-        DispatchQueue.main.async {
-            // Try matching received hex string to a known BLE response
-            if let response = BLEResponse.allCases.first(where: { $0.hexValue() == hexString }) {
-                self.receivedData = response.rawValue
-                print("📥 Received: \(response.rawValue) (HEX: \(hexString))")
-            }
-
-            print("📥 Received Notification: \(hexString) from \(characteristic.uuid.uuidString)")
+        // For 4 bytes
+        if bytes.count >= 4 {
+            let response32 = UInt32(bytes[0])
+                           | UInt32(bytes[1]) << 8
+                           | UInt32(bytes[2]) << 16
+                           | UInt32(bytes[3]) << 24
+            print("32-bit response: \(String(format: "%08X", response32))")
         }
     }
+
+
+    func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
+        print("📥 Received update from \(characteristic.uuid): \(String(describing: characteristic.value))")
+    }
+
 }
